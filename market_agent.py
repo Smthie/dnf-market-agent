@@ -700,40 +700,46 @@ def _clear_system_listings(m, conn_mk):
             log.warning(u"  [reset] 清理 creature_items 失败(不阻断, 下轮再清): %s", e)
 
 
-def _has_pending_work(m, conn_mk, conn_frida):
-    """只读探测本市场是否有待回收/待补货(服务在线时跑, 不改库). 无活则跳过停启, 不打扰玩家.
-    探测口径与实际 recycle/restock 一致, 宁可误判'有活'(多停启一次)也不漏(漏了下轮补)."""
-    cur_a = conn_mk.cursor()
-    cur_f = conn_frida.cursor()
+def _has_recycle_work(m, conn_mk, conn_frida):
+    """只读探测本市场是否有待回收玩家挂单(服务在线时跑, 不改库). 异常保守按有活.
+    探测口径与实际 recycle 一致, 宁可误判(多停启/多扫一次)也不漏."""
     rc = m.get("recycle") or {}
-    rmode = m["restock"].get("mode")
-    # 1) 回收候选?
-    if rc.get("enabled"):
-        try:
-            if rc.get("mode") == "catalog_rules":
-                cur_a.execute(
-                    "SELECT a.unit_price, a.item_id, c.kind, c.type_token, c.rarity "
-                    "FROM auction_main a INNER JOIN " + FRIDA_DB + ".item_catalog c ON a.item_id = c.item_id "
-                    "WHERE " + _player_owner_where("a.owner_id") + " AND a.unit_price > 0")
-                for unit_price, item_id, kind, token, rarity in cur_a.fetchall():
-                    limit = _recycle_price_limit(rc, item_id, kind, token, rarity)
-                    if limit is not None and int(unit_price) <= limit:
-                        return True
-            elif rc.get("mode") == "consign_threshold":
-                cur_a.execute(
-                    "SELECT a.instant_price, l.recycle_price FROM auction_main a "
-                    "INNER JOIN " + FRIDA_DB + "." + m["restock"]["list"] + " l ON a.item_id = l.item_id "
-                    "WHERE " + _player_owner_where("a.owner_id") + " AND l.enabled = 1 AND a.instant_price > 0")
-                for instant_price, recycle_price in cur_a.fetchall():
-                    if int(instant_price) <= int(recycle_price):
-                        return True
-        except Exception as e:
-            log.warning(u"  [%s] 回收探测异常(保守按有活处理): %s", m["label"], e)
-            return True
-    # 2) 补货缺口? have 只数系统挂单(m_id 排除污染真玩家; 含普通+特殊段, item_id 不重叠)
+    if not rc.get("enabled"):
+        return False
     try:
+        cur_a = conn_mk.cursor()
+        if rc.get("mode") == "catalog_rules":
+            cur_a.execute(
+                "SELECT a.unit_price, a.item_id, c.kind, c.type_token, c.rarity "
+                "FROM auction_main a INNER JOIN " + FRIDA_DB + ".item_catalog c ON a.item_id = c.item_id "
+                "WHERE " + _player_owner_where("a.owner_id") + " AND a.unit_price > 0")
+            for unit_price, item_id, kind, token, rarity in cur_a.fetchall():
+                limit = _recycle_price_limit(rc, item_id, kind, token, rarity)
+                if limit is not None and int(unit_price) <= limit:
+                    return True
+        elif rc.get("mode") == "consign_threshold":
+            cur_a.execute(
+                "SELECT a.instant_price, l.recycle_price FROM auction_main a "
+                "INNER JOIN " + FRIDA_DB + "." + m["restock"]["list"] + " l ON a.item_id = l.item_id "
+                "WHERE " + _player_owner_where("a.owner_id") + " AND l.enabled = 1 AND a.instant_price > 0")
+            for instant_price, recycle_price in cur_a.fetchall():
+                if int(instant_price) <= int(recycle_price):
+                    return True
+    except Exception as e:
+        log.warning(u"  [%s] 回收探测异常(保守按有活处理): %s", m["label"], e)
+        return True
+    return False
+
+
+def _has_restock_work(m, conn_mk, conn_frida):
+    """只读探测本市场是否有补货缺口(服务在线时跑, 不改库). 异常保守按有活.
+    have 只数系统挂单(m_id 排除污染真玩家; 含普通+特殊段, item_id 不重叠)."""
+    try:
+        cur_a = conn_mk.cursor()
+        cur_f = conn_frida.cursor()
         cur_a.execute("SELECT item_id, COUNT(*) FROM auction_main WHERE " + _sys_owner_where("owner_id") + " GROUP BY item_id")
         have = dict(cur_a.fetchall())
+        rmode = m["restock"].get("mode")
         if rmode == "catalog_list":
             cur_f.execute("SELECT r.item_id, r.quantity, r.stack_size, c.kind, c.type_token "
                           "FROM " + m["restock"]["list"] + " r LEFT JOIN item_catalog c ON r.item_id = c.item_id")
@@ -781,10 +787,19 @@ def run_once_market(name, m, reset=False):
     conn_mk = get_conn(m["db"])
     conn_frida = get_conn(FRIDA_DB)
     try:
-        # reset 强制全量; 普通轮先只读探测, 无待回收/补货则跳过停启服务(每小时大多无活, 省去打扰玩家)
-        if not reset and not _has_pending_work(m, conn_mk, conn_frida):
-            log.info(u"  [%s] 无待回收/补货, 跳过(不停启服务)", m["label"])
-            return False
+        # reset 强制全量; 普通轮先只读探测: 无活跳过不停启; 仅回收活则在线回收(不停服), 有补货缺口才停服
+        if not reset:
+            rec_work = _has_recycle_work(m, conn_mk, conn_frida)
+            rst_work = _has_restock_work(m, conn_mk, conn_frida)
+            if not rec_work and not rst_work:
+                log.info(u"  [%s] 无待回收/补货, 跳过(不停启服务)", m["label"])
+                return False
+            # 仅回收活: 在线回收不停服(前提: 游戏服能容忍在线 DELETE, 上线前先实测;
+            # recycle.online=false 则回收仍进停服窗口, 与补货顺带清残)
+            if rec_work and not rst_work and (m.get("recycle") or {}).get("online", True):
+                log.info(u"  [%s] 在线回收(不停服, 无补货缺口)...", m["label"])
+                do_recycle(m, conn_mk, conn_frida)
+                return True
         try:
             stop_market(m)
             if reset:

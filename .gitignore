@@ -4,3 +4,5 @@ temp/
 __pycache__/
 *.pyc
 dist/
+# 分析产物(不入库)
+*.xlsx

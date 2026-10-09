@@ -64,6 +64,8 @@
         "material_tokens": ["material", "material expert job"],
         "special_by_kind_type": { "equipment:creature": 1000000 },
         "item_overrides": {},
+        "online": true,
+        "_online_note": "true=仅有待回收活时在线回收(不停服), 需实测游戏服可容忍在线DELETE(玩家端刷新即消失、点购买无异常); 若出现幽灵单/购买异常设 false 回退为停服窗口内回收",
         "_note": "回收价=成交价-5%手续费+10000押金(玩家上架已付该押金, 直接删挂单不退, 必须如数退还). JOIN item_catalog 取类型/稀有度, 挂单单价<=限价即回收. 稀有度: 0普通 1高级 2稀有 3神器 4史诗. special_by_kind_type 按 大类:token 给特例; item_overrides 按编号单品覆盖(最高优先级)"
       }
     },
@@ -86,6 +88,8 @@
         "fee_rate": 0.02,
         "deposit": 0,
         "mail_item_id": 2681762,
+        "online": true,
+        "_online_note": "同拍卖行: true=在线回收(不停服), 需实测; 有异常设 false 回退停服窗口",
         "_note": "金币寄售货币=代币券(item 2681762). 玩家寄售单 instant_price(代币券标价)<=cera_consign_list.recycle_price 即回收, 发代币券=instant_price×(1-2%手续费), 无押金(实测200标价→196到手). 邮件为代币券物品邮件"
       }
     }
