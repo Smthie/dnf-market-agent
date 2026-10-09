@@ -11,9 +11,13 @@ import sys
 
 def main():
     src = sys.argv[1] if len(sys.argv) > 1 else r"D:/gitea/拍卖行分享/root/auction/items.csv"
-    rows = []
+    rows, seen = [], set()
     for r in csv.DictReader(open(src, encoding="utf-8-sig")):
-        rows.append((int(r["item_id"]), r["name"], r["rarity"], int(r["price"])))
+        iid = int(r["item_id"])
+        if iid in seen:  # csv 源偶发重复 item_id(如 27653), 保留首次出现
+            continue
+        seen.add(iid)
+        rows.append((iid, r["name"], r["rarity"], int(r["price"])))
     rows.sort()
 
     # 1) item_ref_price.sql

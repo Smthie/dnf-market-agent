@@ -1,4 +1,4 @@
--- 参考价格表(来自分享工程 items.csv, 5097 条). 导入: mysql --default-character-set=utf8 -u<user> -p frida < item_ref_price.sql
+-- 参考价格表(来自分享工程 items.csv, 5096 条). 导入: mysql --default-character-set=utf8 -u<user> -p frida < item_ref_price.sql
 -- price = 分享工程 P_std 基准价: 消耗品直接用; 装备作强化公式的 shop/P_base.
 SET NAMES utf8;
 CREATE TABLE IF NOT EXISTS `item_ref_price` (
@@ -2802,7 +2802,6 @@ INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
 (27650,300000),
 (27651,14000000),
 (27652,2800),
-(27653,4000),
 (27653,560),
 (27654,300000),
 (27656,4800),
@@ -2820,9 +2819,9 @@ INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
 (27670,7200),
 (27671,5824),
 (27672,8320),
-(27673,5000000);
+(27673,5000000),
+(27674,2500000);
 INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
-(27674,2500000),
 (27675,31000000),
 (27678,5000000),
 (27679,3000000),
@@ -3021,9 +3020,9 @@ INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
 (29123,9600),
 (29124,300000),
 (29125,300000),
-(29126,5000000);
+(29126,5000000),
+(29132,160000000);
 INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
-(29132,160000000),
 (29134,600000),
 (29143,62000000),
 (29300,256),
@@ -3222,9 +3221,9 @@ INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
 (30273,3500000),
 (30274,3000000),
 (30275,5000000),
-(30277,10944);
+(30277,10944),
+(30278,4000000);
 INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
-(30278,4000000),
 (30281,8640),
 (30282,11520),
 (30283,300000),
@@ -3423,9 +3422,9 @@ INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
 (31713,300000),
 (31714,800000),
 (31715,5000000),
-(31721,16500000);
+(31721,16500000),
+(31723,500000);
 INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
-(31723,500000),
 (31900,128),
 (31903,960),
 (31904,1152),
@@ -3624,9 +3623,9 @@ INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
 (33309,2400),
 (33310,2240),
 (33311,3200),
-(33312,2800);
+(33312,2800),
+(33313,4000);
 INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
-(33313,4000),
 (33314,3360),
 (33315,4800),
 (33317,5600),
@@ -3825,9 +3824,9 @@ INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
 (34217,300000),
 (34218,300000),
 (34219,500000),
-(34220,3000000);
+(34220,3000000),
+(34221,300000);
 INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
-(34221,300000),
 (34222,300000),
 (34225,3456),
 (34227,300000),
@@ -4026,9 +4025,9 @@ INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
 (35638,300000),
 (35639,900000),
 (35641,5000000),
-(35642,8000000);
+(35642,8000000),
+(35643,5000000);
 INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
-(35643,5000000),
 (35644,8000000),
 (35645,5000000),
 (35646,5000000),
@@ -4227,9 +4226,9 @@ INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
 (37058,5000000),
 (37059,5000000),
 (37070,6720),
-(37071,9600);
+(37071,9600),
+(37072,250000);
 INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
-(37072,250000),
 (37073,800000),
 (37074,5000000),
 (37080,2800000),
@@ -4428,9 +4427,9 @@ INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
 (440048,3000000),
 (440049,200000),
 (440050,200000),
-(440051,200000);
+(440051,200000),
+(440052,200000);
 INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
-(440052,200000),
 (440053,200000),
 (440054,200000),
 (440055,200000),
@@ -4629,9 +4628,9 @@ INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
 (440333,10000000),
 (440338,3000000),
 (440339,12000000),
-(440340,12000000);
+(440340,12000000),
+(440341,12000000);
 INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
-(440341,12000000),
 (440342,12000000),
 (450002,20000000),
 (450003,80000000),
@@ -4830,9 +4829,9 @@ INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
 (2600295,10000000),
 (2600296,10000000),
 (2600297,10000000),
-(2600298,1000000);
+(2600298,1000000),
+(2600299,1000000);
 INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
-(2600299,1000000),
 (2600300,1000000),
 (2600301,1000000),
 (2600302,1000000),
@@ -5031,9 +5030,9 @@ INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
 (2647208,3000000),
 (2647209,3000000),
 (2647218,3000000),
-(2647219,3000000);
+(2647219,3000000),
+(2647220,3000000);
 INSERT INTO `item_ref_price` (`item_id`,`price`) VALUES
-(2647220,3000000),
 (2647221,3000000),
 (2647222,3000000),
 (2647223,3000000),
