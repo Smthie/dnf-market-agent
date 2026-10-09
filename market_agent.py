@@ -616,6 +616,8 @@ def restock_catalog_list(m, conn_mk, conn_frida):
     rs = m["restock"]
     # 参考工程: 卖家心态 4 档概率浮动 + 市场饱和度降价 + 上架价硬下限
     sat = rs.get("saturation") or {}
+    scarce_th = int(sat.get("scarce_threshold", 0))
+    scarce_shift = float(sat.get("scarce_shift", 0))
     sat_th = int(sat.get("saturated_threshold", 20))
     sat_shift = float(sat.get("saturated_shift", 0))
     min_ratio = float(rs.get("min_price_ratio", 0.10))
