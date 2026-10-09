@@ -601,6 +601,16 @@ def _pick_mind(bands):
     return 1.0
 
 
+def _pick_enhance(bands):
+    """参考工程强化等级分布: 概率选档位. bands 形如 [{lvl, p}]; 无配置/史诗 -> 0(白板)."""
+    r = random.random()
+    for b in bands or []:
+        r -= float(b.get("p", 0))
+        if r < 0:
+            return int(b["lvl"])
+    return 0
+
+
 # ---- 7a. 补货: 拍卖行(catalog_list, 按 quantity/stack_size 随机定价) ----
 def restock_catalog_list(m, conn_mk, conn_frida):
     rs = m["restock"]
@@ -609,6 +619,10 @@ def restock_catalog_list(m, conn_mk, conn_frida):
     sat_th = int(sat.get("saturated_threshold", 20))
     sat_shift = float(sat.get("saturated_shift", 0))
     min_ratio = float(rs.get("min_price_ratio", 0.10))
+    edist = rs.get("enhance_dist") or {}
+    min_up = rs.get("min_upgrade") or {}
+    eq_grade = int(rs.get("equip_grade", 999999998))
+    pc = (m.get("recycle") or {}).get("pricing") or {}    # 强化公式系数(与回收共用)
     owner_name = m.get("owner_name", u"拍卖行")
     cur_a = conn_mk.cursor()
     cur_f = conn_frida.cursor()
@@ -642,7 +656,8 @@ def restock_catalog_list(m, conn_mk, conn_frida):
     #   endurance: 称号/宠物/红蓝绿装备无耐久=0; 武器/防具等普通装备=35.
     #   seal_flag(封装): 稀有及以上(rarity>=2)=1; 否则 0.
     NO_ENDUR = ("creature", "artifact red", "artifact blue", "artifact green", "title name")  # 称号/宠物/红蓝绿装备无耐久
-    EQUIP_GRADE = 999999998  # 普通装备补货品级(实测最上级合法值)
+    EQUIP_GRADE = eq_grade if eq_grade else 999999998       # 装备品级 add_info(可配置, 默认最上级实测合法值)
+    RARITY_ENH = {0: "white", 1: "blue", 2: "purple", 3: "pink"}  # rarity 数字 -> 强化分布键; 史诗(4+)无档 -> 白板
     rows, total = [], 0
     for item_id, system_price, quantity, stack_size, upgrade, endurance, seal_flag, kind, type_token, rarity in items:
         if (SP_ENABLED and type_token in SP_TOKENS) or type_token in SP_DROP_TOKENS:
@@ -661,23 +676,35 @@ def restock_catalog_list(m, conn_mk, conn_frida):
             pos = current + i
             if is_equip:
                 add_info = eq_addinfo
+                # 强化等级每件独立抽档(参考 enhance_dist): 白/蓝 11-18 强, 紫/粉 0-15 强, 史诗保持白板
+                lvl = 0
+                rk = RARITY_ENH.get(int(rarity)) if rarity is not None else None
+                if rk:
+                    lvl = _pick_enhance(edist.get(rk) or [])
+                    mn = int(min_up.get(rk, 0) or 0)
+                    if lvl and lvl < mn:
+                        lvl = mn
+                base = _pstd_price(pc, "equipment", rarity, system_price, lvl)
+                if base is None:
+                    base = system_price            # 史诗/无系数: 回退基准价
             else:
                 add_info = eff_stack if pos < target_records - 1 else (quantity - (target_records - 1) * eff_stack)
-            # 定价: 卖家心态每件独立选档(0.5~1.5), 同物品挂单已达饱和阈值再降 sat_shift, 硬下限=system_price*min_ratio
+            # 定价: 卖家心态每件独立选档(0.5~1.5), 稀缺(<scarce_th)提价 / 饱和(>=sat_th)降价, 硬下限=基准价*min_ratio
             mult = _pick_mind(rs.get("seller_mind"))
-            if current >= sat_th:
+            if scarce_th > 0 and current < scarce_th:
+                mult += scarce_shift
+            elif current >= sat_th:
                 mult += sat_shift
-            unit_price = int(system_price * mult)
-            if unit_price < max(1, int(system_price * min_ratio)):
-                unit_price = max(1, int(system_price * min_ratio))
-            # 装备一口价=单价(add_info 是品级/数量, 非堆叠); 材料一口价=单价×堆叠数
+            base = base if is_equip else system_price
+            unit_price = max(max(1, int(system_price * min_ratio)), int(base * mult))
+            # 装备一口价=单价(add_info 是品级, 非堆叠); 材料一口价=单价×堆叠数
             instant_price = unit_price if is_equip else unit_price * add_info
             owner_id = pick_owner()
             nexon = NEXON_BASE + owner_id
             if is_equip:
                 rows.append((
                     next_id, expire_time, owner_id, owner_name[:20], SYS_OWNER_TYPE, str(nexon)[:25],
-                    instant_price, eq_seal, item_id, add_info, 0, eq_endur, unit_price,
+                    instant_price, eq_seal, item_id, add_info, lvl, eq_endur, unit_price,
                 ))
             else:                                              # 材料/消耗品: seal=0, upgrade=0, endurance=0
                 rows.append((
@@ -1065,17 +1092,32 @@ def _acquire_singleton_lock():
 
 
 def main():
+    argv = sys.argv[1:]
+    cmd = next((a for a in argv if a in ("init", "reset", "once")), None)
     log.info(u"=== 多市场自动做市(market_agent) === 日志: %s", LOG_PATH)
-    if len(sys.argv) > 1 and sys.argv[1] == "init":
+    if cmd == "init":
         init_tables()
         return
+    # 随机种子: config runtime.random_seed 或命令行 --seed N(优先), 固定后可复现测试
+    seed = None
+    rt = CFG.get("runtime") or {}
+    if isinstance(rt, dict) and rt.get("random_seed") is not None:
+        seed = int(rt["random_seed"])
+    if "--seed" in argv:
+        try:
+            seed = int(argv[argv.index("--seed") + 1])
+        except (ValueError, IndexError):
+            pass
+    if seed is not None:
+        random.seed(seed)
+        log.info(u"随机种子固定: %s", seed)
     if not _acquire_singleton_lock():                     # once/reset/loop 单例, 防并发
         return
-    if len(sys.argv) > 1 and sys.argv[1] == "reset":
+    if cmd == "reset":
         log.info(u"=== reset: 清空各市场系统挂单后全量重补(改 config/补货列表后用) ===")
         run_once(reset=True)
         return
-    if len(sys.argv) > 1 and sys.argv[1] == "once":
+    if cmd == "once":
         run_once()
         return
     while True:

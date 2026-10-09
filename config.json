@@ -13,6 +13,11 @@
 
   "interval": 3600,
 
+  "runtime": {
+    "random_seed": null,
+    "_note": "随机种子: 非空则固定(可复现测试), 如 \"--seed 42\" 命令行优先. null=系统时间随机"
+  },
+
   "mail_encoding": "utf-8",
   "_mail_encoding_note": "客户端期望 UTF-8 字节(已验证: 整点广播UTF-8字符串直发正常; Navicat手插UTF-8邮件正常). 配合 my.cnf [client]=latin1 让游戏读写字节透明. 切勿改成 gbk, 否则离线邮件乱码",
 
@@ -58,9 +63,56 @@
           { "name": "奸商", "prob": 0.15, "mult_min": 1.10, "mult_max": 1.30 },
           { "name": "小白", "prob": 0.05, "mult_min": 1.30, "mult_max": 1.50 }
         ],
-        "saturation": { "saturated_threshold": 20, "saturated_shift": -0.10 },
+        "saturation": {
+          "scarce_threshold": 5,
+          "saturated_threshold": 20,
+          "scarce_shift": 0.10,
+          "saturated_shift": -0.10
+        },
         "min_price_ratio": 0.10,
-        "_note": "上架价=system_price×卖家心态倍率(按档概率浮动), 同物品已挂≥20件再降10%, 硬下限=system_price×0.10. rand_low/rand_high 仅兼容保留(不参与定价); 不想波动清空 seller_mind 或全档 prob=0"
+        "enhance_dist": {
+          "_note": "参考工程强化等级分布(按稀有度, 概率和=1). rarity 0=白 1=蓝 2=紫 3=粉; 史诗(4)无档位保持白板0",
+          "white": [
+            { "lvl": 12, "p": 0.638 },
+            { "lvl": 13, "p": 0.197 },
+            { "lvl": 14, "p": 0.098 },
+            { "lvl": 15, "p": 0.050 },
+            { "lvl": 16, "p": 0.010 },
+            { "lvl": 17, "p": 0.005 },
+            { "lvl": 18, "p": 0.002 }
+          ],
+          "blue": [
+            { "lvl": 11, "p": 0.577 },
+            { "lvl": 12, "p": 0.240 },
+            { "lvl": 13, "p": 0.096 },
+            { "lvl": 14, "p": 0.039 },
+            { "lvl": 15, "p": 0.040 },
+            { "lvl": 16, "p": 0.005 },
+            { "lvl": 17, "p": 0.002 },
+            { "lvl": 18, "p": 0.001 }
+          ],
+          "purple": [
+            { "lvl": 0, "p": 0.41 },
+            { "lvl": 10, "p": 0.26 },
+            { "lvl": 11, "p": 0.13 },
+            { "lvl": 12, "p": 0.08 },
+            { "lvl": 13, "p": 0.05 },
+            { "lvl": 14, "p": 0.04 },
+            { "lvl": 15, "p": 0.03 }
+          ],
+          "pink": [
+            { "lvl": 0, "p": 0.45 },
+            { "lvl": 10, "p": 0.23 },
+            { "lvl": 11, "p": 0.12 },
+            { "lvl": 12, "p": 0.08 },
+            { "lvl": 13, "p": 0.05 },
+            { "lvl": 14, "p": 0.04 },
+            { "lvl": 15, "p": 0.03 }
+          ]
+        },
+        "min_upgrade": { "white": 12, "blue": 11 },
+        "equip_grade": 999999998,
+        "_note": "上架价: 装备=强化公式 P_std(n)×心态倍率(n=按稀有度抽档, 白板n=0用基准价), 材料/消耗品=基准价×心态倍率. 心态 4 档概率浮动; 同物品已挂<5件稀缺提价10% / ≥20件饱和降10%; 硬下限=基准价×0.10. equip_grade=装备品级add_info(参考工程源码未见, 默认最上级实测合法值999999998; 强化信息在 upgrade 列与品级独立). rand_low/rand_high 仅兼容保留; 不想波动清空 seller_mind 或全档 prob=0, 不想随机强化清空 enhance_dist"
       },
       "recycle": {
         "enabled": true,
