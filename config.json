@@ -1,6 +1,5 @@
 {
   "_comment": "多市场做市编排配置(market_agent.py). 中文用 UTF-8. 默认走 unix_socket 本地连库.",
-
   "mysql": {
     "unix_socket": "/var/lib/mysql/mysql.sock",
     "host": "127.0.0.1",
@@ -10,39 +9,40 @@
     "frida_db": "frida",
     "charset": "utf8"
   },
-
   "interval": 3600,
-
   "runtime": {
     "random_seed": null,
     "_note": "随机种子: 非空则固定(可复现测试), 如 \"--seed 42\" 命令行优先. null=系统时间随机"
   },
-
   "mail_encoding": "utf-8",
   "_mail_encoding_note": "客户端期望 UTF-8 字节(已验证: 整点广播UTF-8字符串直发正常; Navicat手插UTF-8邮件正常). 配合 my.cnf [client]=latin1 让游戏读写字节透明. 切勿改成 gbk, 否则离线邮件乱码",
-
   "system_owner": {
     "owner_type": 1,
     "id_base": 90000001,
     "nexon_base": 18000000,
     "rotate_every": 10,
     "_note": "实测玩家与系统挂单 owner_type 同为1, 故用 owner_id 区分: <id_base=玩家, >=id_base=系统. id_base 必须大于任何真实玩家 charac_no. 两市场共用此边界(玩家 charac_no 全局唯一)",
-
     "special": {
       "enabled": true,
       "charac_db": "taiwan_cain",
       "game_db": "taiwan_cain_2nd",
       "addinfo_base": 2100000000,
-      "tokens": ["title name", "creature", "artifact red", "artifact blue", "artifact green"],
-      "creature_tokens": ["creature"],
+      "tokens": [
+        "title name",
+        "creature",
+        "artifact red",
+        "artifact blue",
+        "artifact green"
+      ],
+      "creature_tokens": [
+        "creature"
+      ],
       "drop_tokens": [],
       "_note": "零桩特殊补货. 实测: 称号/装扮/红蓝绿装备/宠物均无须 charac_info 桩角色, 全挂普通系统 90M 假 owner(同普通补货, 按 rotate_every 每owner件数轮换, 过密会崩加载). 非宠物(称号/装扮/装备)add_info 取 addinfo_base 高位段唯一递增(★装扮/artifact 的 add_info 必须全局唯一, =0 重复会崩RegistItem; 称号宽容但统一走高位★). 宠物(creature)须 auction.owner_id==creature_items.charac_no(两者同为该90M假号), 据 game_db.creature_items 自增 ui_id 当 add_info(不可手填,否则与游戏服并发孵化撞主键)并建实例(it_id=蛋id)否则买家无法孵化. (artifact red 曾误判需桩, 实为早期测试克隆了称号的非法列值; 同列方案即零桩, 故 drop_tokens 空.) charac_db 仅供系统/玩家 m_id 判据用. 需 mysql 用户对 charac_db/game_db 有 SELECT/INSERT/DELETE 权限"
     }
   },
-
   "vendor_path": "/data/auction/vendor",
   "log_path": "/data/auction/market_agent.log",
-
   "_markets_note": "每个市场独立配置: 库/停启服务/补货列表/回收规则. run_once 依次对每个 enabled 市场跑 停服务->回收->补货->启服务. 关闭某市场只需 enabled=false",
   "markets": {
     "auction": {
@@ -58,87 +58,265 @@
         "rand_low": 1,
         "rand_high": 1,
         "seller_mind": [
-          { "name": "急需", "prob": 0.20, "mult_min": 0.50, "mult_max": 0.80 },
-          { "name": "普通", "prob": 0.60, "mult_min": 0.90, "mult_max": 1.10 },
-          { "name": "奸商", "prob": 0.15, "mult_min": 1.10, "mult_max": 1.30 },
-          { "name": "小白", "prob": 0.05, "mult_min": 1.30, "mult_max": 1.50 }
+          {
+            "name": "急需",
+            "prob": 0.2,
+            "mult_min": 0.5,
+            "mult_max": 0.8
+          },
+          {
+            "name": "普通",
+            "prob": 0.6,
+            "mult_min": 0.9,
+            "mult_max": 1.1
+          },
+          {
+            "name": "奸商",
+            "prob": 0.15,
+            "mult_min": 1.1,
+            "mult_max": 1.3
+          },
+          {
+            "name": "小白",
+            "prob": 0.05,
+            "mult_min": 1.3,
+            "mult_max": 1.5
+          }
         ],
         "saturation": {
           "scarce_threshold": 5,
           "saturated_threshold": 20,
-          "scarce_shift": 0.10,
-          "saturated_shift": -0.10
+          "scarce_shift": 0.1,
+          "saturated_shift": -0.1
         },
-        "min_price_ratio": 0.10,
+        "min_price_ratio": 0.1,
         "enhance_dist": {
           "_note": "参考工程强化等级分布(按稀有度, 概率和=1). rarity 0=白 1=蓝 2=紫 3=粉; 史诗(4)无档位保持白板0",
           "white": [
-            { "lvl": 12, "p": 0.638 },
-            { "lvl": 13, "p": 0.197 },
-            { "lvl": 14, "p": 0.098 },
-            { "lvl": 15, "p": 0.050 },
-            { "lvl": 16, "p": 0.010 },
-            { "lvl": 17, "p": 0.005 },
-            { "lvl": 18, "p": 0.002 }
+            {
+              "lvl": 12,
+              "p": 0.638
+            },
+            {
+              "lvl": 13,
+              "p": 0.197
+            },
+            {
+              "lvl": 14,
+              "p": 0.098
+            },
+            {
+              "lvl": 15,
+              "p": 0.05
+            },
+            {
+              "lvl": 16,
+              "p": 0.01
+            },
+            {
+              "lvl": 17,
+              "p": 0.005
+            },
+            {
+              "lvl": 18,
+              "p": 0.002
+            }
           ],
           "blue": [
-            { "lvl": 11, "p": 0.577 },
-            { "lvl": 12, "p": 0.240 },
-            { "lvl": 13, "p": 0.096 },
-            { "lvl": 14, "p": 0.039 },
-            { "lvl": 15, "p": 0.040 },
-            { "lvl": 16, "p": 0.005 },
-            { "lvl": 17, "p": 0.002 },
-            { "lvl": 18, "p": 0.001 }
+            {
+              "lvl": 11,
+              "p": 0.577
+            },
+            {
+              "lvl": 12,
+              "p": 0.24
+            },
+            {
+              "lvl": 13,
+              "p": 0.096
+            },
+            {
+              "lvl": 14,
+              "p": 0.039
+            },
+            {
+              "lvl": 15,
+              "p": 0.04
+            },
+            {
+              "lvl": 16,
+              "p": 0.005
+            },
+            {
+              "lvl": 17,
+              "p": 0.002
+            },
+            {
+              "lvl": 18,
+              "p": 0.001
+            }
           ],
           "purple": [
-            { "lvl": 0, "p": 0.41 },
-            { "lvl": 10, "p": 0.26 },
-            { "lvl": 11, "p": 0.13 },
-            { "lvl": 12, "p": 0.08 },
-            { "lvl": 13, "p": 0.05 },
-            { "lvl": 14, "p": 0.04 },
-            { "lvl": 15, "p": 0.03 }
+            {
+              "lvl": 0,
+              "p": 0.41
+            },
+            {
+              "lvl": 10,
+              "p": 0.26
+            },
+            {
+              "lvl": 11,
+              "p": 0.13
+            },
+            {
+              "lvl": 12,
+              "p": 0.08
+            },
+            {
+              "lvl": 13,
+              "p": 0.05
+            },
+            {
+              "lvl": 14,
+              "p": 0.04
+            },
+            {
+              "lvl": 15,
+              "p": 0.03
+            }
           ],
           "pink": [
-            { "lvl": 0, "p": 0.45 },
-            { "lvl": 10, "p": 0.23 },
-            { "lvl": 11, "p": 0.12 },
-            { "lvl": 12, "p": 0.08 },
-            { "lvl": 13, "p": 0.05 },
-            { "lvl": 14, "p": 0.04 },
-            { "lvl": 15, "p": 0.03 }
+            {
+              "lvl": 0,
+              "p": 0.45
+            },
+            {
+              "lvl": 10,
+              "p": 0.23
+            },
+            {
+              "lvl": 11,
+              "p": 0.12
+            },
+            {
+              "lvl": 12,
+              "p": 0.08
+            },
+            {
+              "lvl": 13,
+              "p": 0.05
+            },
+            {
+              "lvl": 14,
+              "p": 0.04
+            },
+            {
+              "lvl": 15,
+              "p": 0.03
+            }
           ]
         },
-        "min_upgrade": { "white": 12, "blue": 11 },
+        "min_upgrade": {
+          "white": 12,
+          "blue": 11
+        },
         "equip_grade": 999999998,
-        "_note": "上架价: 装备=强化公式 P_std(n)×心态倍率(n=按稀有度抽档, 白板n=0用基准价), 材料/消耗品=基准价×心态倍率. 心态 4 档概率浮动; 同物品已挂<5件稀缺提价10% / ≥20件饱和降10%; 硬下限=基准价×0.10. equip_grade=装备品级add_info(参考工程源码未见, 默认最上级实测合法值999999998; 强化信息在 upgrade 列与品级独立). rand_low/rand_high 仅兼容保留; 不想波动清空 seller_mind 或全档 prob=0, 不想随机强化清空 enhance_dist"
+        "_note": "上架价: 装备=强化公式 P_std(n)×心态倍率(n=按稀有度抽档, 白板n=0用基准价), 材料/消耗品=基准价×心态倍率. 心态 4 档概率浮动; 同物品已挂<5件稀缺提价10% / >=20件饱和降价10%; 硬下限=基准价×0.10. 驱动方式(参考工程): 装备=equip_target_count[稀有度]区间随机件数目标(缺补足), 消耗品=市场总价值<consume_target_value才补(补到达标). max_unit_price=单价上限(超限放弃该单), consume_max_stack=消耗品单次堆叠上限(防 add_info 溢出). equip_grade=装备品级add_info(参考工程源码未见, 默认最上级实测合法值999999998; 强化信息由 upgrade 表达物品等级). rand_low/rand_high 保留兼容; 想波动关 seller_mind 全部 prob=0; 想白板关 enhance_dist",
+        "equip_target_count": {
+          "white": {
+            "min": 1,
+            "max": 5
+          },
+          "blue": {
+            "min": 1,
+            "max": 5
+          },
+          "purple": {
+            "min": 1,
+            "max": 3
+          },
+          "pink": {
+            "min": 1,
+            "max": 2
+          }
+        },
+        "consume_target_value": 100000000,
+        "consume_max_stack": 1000,
+        "max_unit_price": 2999999999
       },
       "recycle": {
         "enabled": true,
         "mode": "catalog_rules",
         "fee_rate": 0.05,
         "deposit": 10000,
-        "equipment_by_rarity": { "2": 200000, "3": 2000000 },
-        "material_by_rarity": { "0": 100, "1": 500, "2": 1000, "3": 10000 },
-        "material_tokens": ["material", "material expert job"],
-        "special_by_kind_type": { "equipment:creature": 1000000 },
+        "equipment_by_rarity": {
+          "2": 200000,
+          "3": 2000000
+        },
+        "material_by_rarity": {
+          "0": 100,
+          "1": 500,
+          "2": 1000,
+          "3": 10000
+        },
+        "material_tokens": [
+          "material",
+          "material expert job"
+        ],
+        "special_by_kind_type": {
+          "equipment:creature": 1000000
+        },
         "pricing": {
           "scale": 150000,
           "white_blue_coeff": {
-            "10": { "A": 75.76, "B": 127272 },
-            "11": { "A": 111.41, "B": 216577 },
-            "12": { "A": 227.27, "B": 381819 },
-            "13": { "A": 445.63, "B": 866311 },
-            "14": { "A": 713.01, "B": 1786097 },
-            "15": { "A": 1693.40, "B": 5491980 },
-            "16": { "A": 4634.58, "B": 6609626 },
-            "17": { "A": 9803.92, "B": 7058824 },
-            "18": { "A": 19607.84, "B": 14117648 }
+            "10": {
+              "A": 75.76,
+              "B": 127272
+            },
+            "11": {
+              "A": 111.41,
+              "B": 216577
+            },
+            "12": {
+              "A": 227.27,
+              "B": 381819
+            },
+            "13": {
+              "A": 445.63,
+              "B": 866311
+            },
+            "14": {
+              "A": 713.01,
+              "B": 1786097
+            },
+            "15": {
+              "A": 1693.4,
+              "B": 5491980
+            },
+            "16": {
+              "A": 4634.58,
+              "B": 6609626
+            },
+            "17": {
+              "A": 9803.92,
+              "B": 7058824
+            },
+            "18": {
+              "A": 19607.84,
+              "B": 14117648
+            }
           },
           "purple_pink_base_cost": {
-            "10": 150000, "11": 250000, "12": 450000, "13": 1000000, "14": 2000000,
-            "15": 6000000, "16": 8000000, "17": 10000000, "18": 20000000
+            "10": 150000,
+            "11": 250000,
+            "12": 450000,
+            "13": 1000000,
+            "14": 2000000,
+            "15": 6000000,
+            "16": 8000000,
+            "17": 10000000,
+            "18": 20000000
           },
           "_note": "回收主判定(参考分享工程): JOIN item_ref_price 取 per-item 基准价, 材料/消耗品 P_std=基准价; 白蓝装 P_std=A(n)*基准价+B(n); 紫粉装 P_std=基准价+BaseCost(n)*(1+sqrt(基准价/scale)). upgrade<10 视为白板=基准价. 回收概率按 R=玩家单价/P_std 分档(<=0.5 必收, 0.5-0.9 线性降, 0.9-1.1 50%, 1.1-1.5 再降, >1.5 不收). item_ref_price 未导入/无价的物品自动回退本工程规则(equipment_by_rarity 等必收上限)"
         },
@@ -148,7 +326,6 @@
         "_note": "回收价=成交价-5%手续费+10000押金(玩家上架已付该押金, 直接删挂单不退, 必须如数退还). JOIN item_catalog 取类型/稀有度, 挂单单价<=限价即回收. 稀有度: 0普通 1高级 2稀有 3神器 4史诗. special_by_kind_type 按 大类:token 给特例; item_overrides 按编号单品覆盖(最高优先级)"
       }
     },
-
     "cera": {
       "enabled": true,
       "label": "金币寄售",
