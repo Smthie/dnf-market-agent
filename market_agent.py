@@ -264,10 +264,12 @@ def recycle_catalog_rules(m, conn_mk, conn_frida):
             has_ref = False
     except Exception:
         has_ref = False
-    join_ref = " LEFT JOIN " + FRIDA_DB + ".item_ref_price rp ON a.item_id = rp.item_id " if has_ref else ""
+    # 无 csv 价(item_ref_price 未命中)的物品: 回退 restock_list.system_price(= 补货基准), 与补货基准价保持一致
+    join_ref = (" LEFT JOIN " + FRIDA_DB + ".item_ref_price rp ON a.item_id = rp.item_id "
+                " LEFT JOIN " + FRIDA_DB + ".restock_list rs ON a.item_id = rs.item_id ") if has_ref else ""
     sel = ("a.auction_id, a.owner_id, a.occ_time, a.add_info, "
            "a.unit_price, a.item_id, a.upgrade, c.cname, c.kind, c.type_token, c.rarity"
-           + (", rp.price" if has_ref else ""))
+           + (", rp.price, rs.system_price" if has_ref else ""))
     try:
         cur_a.execute(
             "SELECT " + sel + " FROM auction_main a "
@@ -289,6 +291,8 @@ def recycle_catalog_rules(m, conn_mk, conn_frida):
         auction_id, owner_id, occ_time, add_info, unit_price, item_id, upgrade = row[:7]
         cname, kind, token, rarity = row[7:11]
         ref_price = row[11] if has_ref else None
+        if ref_price is None and has_ref:
+            ref_price = row[12]        # 无 csv 价 -> 回退补货基准(restock_list.system_price), 与补货一致
         # 参考价存在且公式适用 -> 分享工程概率回收; 否则 fallback 旧规则(稀有度上限必收)
         limit = None
         if has_ref and ref_price is not None:
