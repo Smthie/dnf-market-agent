@@ -52,7 +52,15 @@
         "list": "restock_list",
         "rand_low": 1,
         "rand_high": 1,
-        "_note": "补货按 restock_list 的 quantity/stack_size 补缺口, 单价=system_price×随机(rand_low~rand_high)"
+        "seller_mind": [
+          { "name": "急需", "prob": 0.20, "mult_min": 0.50, "mult_max": 0.80 },
+          { "name": "普通", "prob": 0.60, "mult_min": 0.90, "mult_max": 1.10 },
+          { "name": "奸商", "prob": 0.15, "mult_min": 1.10, "mult_max": 1.30 },
+          { "name": "小白", "prob": 0.05, "mult_min": 1.30, "mult_max": 1.50 }
+        ],
+        "saturation": { "saturated_threshold": 20, "saturated_shift": -0.10 },
+        "min_price_ratio": 0.10,
+        "_note": "上架价=system_price×卖家心态倍率(按档概率浮动), 同物品已挂≥20件再降10%, 硬下限=system_price×0.10. rand_low/rand_high 仅兼容保留(不参与定价); 不想波动清空 seller_mind 或全档 prob=0"
       },
       "recycle": {
         "enabled": true,

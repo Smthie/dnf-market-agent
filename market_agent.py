@@ -591,11 +591,24 @@ def restock_special(m, conn_mk):
              len(rows), len(other_jobs), len(pet_jobs))
 
 
+def _pick_mind(bands):
+    """参考工程卖家心态: 概率选档, 档内均匀浮动. bands 形如 [{name,prob,mult_min,mult_max}]; 无配置 -> 1.0(固定价)."""
+    r = random.random()
+    for b in bands or []:
+        r -= float(b.get("prob", 0))
+        if r < 0:
+            return random.uniform(float(b["mult_min"]), float(b["mult_max"]))
+    return 1.0
+
+
 # ---- 7a. 补货: 拍卖行(catalog_list, 按 quantity/stack_size 随机定价) ----
 def restock_catalog_list(m, conn_mk, conn_frida):
     rs = m["restock"]
-    rand_low = float(rs.get("rand_low", 0.8))
-    rand_high = float(rs.get("rand_high", 1.2))
+    # 参考工程: 卖家心态 4 档概率浮动 + 市场饱和度降价 + 上架价硬下限
+    sat = rs.get("saturation") or {}
+    sat_th = int(sat.get("saturated_threshold", 20))
+    sat_shift = float(sat.get("saturated_shift", 0))
+    min_ratio = float(rs.get("min_price_ratio", 0.10))
     owner_name = m.get("owner_name", u"拍卖行")
     cur_a = conn_mk.cursor()
     cur_f = conn_frida.cursor()
@@ -650,9 +663,13 @@ def restock_catalog_list(m, conn_mk, conn_frida):
                 add_info = eq_addinfo
             else:
                 add_info = eff_stack if pos < target_records - 1 else (quantity - (target_records - 1) * eff_stack)
-            unit_price = int(system_price * random.uniform(rand_low, rand_high))
-            if unit_price < 1:
-                unit_price = 1
+            # 定价: 卖家心态每件独立选档(0.5~1.5), 同物品挂单已达饱和阈值再降 sat_shift, 硬下限=system_price*min_ratio
+            mult = _pick_mind(rs.get("seller_mind"))
+            if current >= sat_th:
+                mult += sat_shift
+            unit_price = int(system_price * mult)
+            if unit_price < max(1, int(system_price * min_ratio)):
+                unit_price = max(1, int(system_price * min_ratio))
             # 装备一口价=单价(add_info 是品级/数量, 非堆叠); 材料一口价=单价×堆叠数
             instant_price = unit_price if is_equip else unit_price * add_info
             owner_id = pick_owner()

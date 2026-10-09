@@ -228,7 +228,7 @@ sleep 5 && tail -30 market_agent.log
 | `mysql`                    | 库连接：`unix_socket` 或 `host/port`、`user/password`、`charset`、`frida_db`。                                                                                                |
 | `interval`                 | 常驻循环的轮间隔秒（cron 模式不用）。                                                                                                                                         |
 | `mail_encoding`            | 邮件文本编码，固定 `utf-8`（配合 `my.cnf [client]=latin1`；**切勿改 gbk**）。                                                                                       |
-| `markets.<名>`             | 每个市场：`enabled`、`label`、`db`、`stop_cmd`/`start_cmd`、`restock`（mode/list/定价）、`recycle`（mode/规则/费率/押金/`pricing` 参考价公式）。                                                   |
+| `markets.<名>`             | 每个市场：`enabled`、`label`、`db`、`stop_cmd`/`start_cmd`、`restock`（mode/list/卖家心态 seller_mind + 饱和度 + 价格下限）、`recycle`（mode/规则/费率/押金/`pricing` 参考价公式）。                                                   |
 | `system_owner`             | `id_base`（系统/玩家边界）、`rotate_every`（每 owner 件数上限，别 ≥15）、`special`（零桩块：`addinfo_base`/`tokens`/`creature_tokens`/`drop_tokens`/`charac_db`/`game_db`）。 |
 | `vendor_path` / `log_path` | pymysql 包目录 / 日志文件路径，**按你的实际部署目录修改**（示例值为 `/data/auction/...`）；省略这两项则用默认 = 脚本同目录的 `vendor/` 与 `market_agent.log`。                |
 
