@@ -18,195 +18,183 @@
 
 ---
 
+## 🚀 快速上手（只想用它，不用看原理）
+
+**日常你只需碰三样**：
+
+| 想做什么 | 动哪里 | 改完怎么办 |
+|---|---|---|
+| 改回收价 / 开关 | `config.json` 的 `markets.<市场>.recycle` | 下一轮自动生效 |
+| 改补货品项 / 补货价 | `restock_list` 表（拍卖行） | 改价后跑一次 `python market_agent.py reset` 全量重建 |
+| 看有没有正常跑 | `market_agent.log` | 搜 `回收 N 件` / `补货 N 件` / `探测异常` |
+
+**部署就 5 步**（细节见下文「部署」）：
+1. 把 `market_agent.py`、`config.json`、`vendor/pymysql` 放到服务器。
+2. 改 `config.json`：数据库账号密码、两个服务的停启命令。
+3. `python market_agent.py init` 建表。
+4. 导入 `item_catalog.sql`（回收判价用）。
+5. `python market_agent.py once` 试跑一轮 → 确认正常后挂 cron 每整点跑。
+
+---
+
 ## 运行环境与依赖
 
-- **Python**：**2.7** 或 **3.9+**（同一份脚本双兼容，已实测 `py_compile` / `pyflakes` 通过）。
-  - 脚本源码语言级兼容 py2.6–2.7 与 py3.3+；含依赖的实际下界由 pymysql 决定（见下）。
-- **依赖**：仅标准库 + **vendored pymysql**（纯 Python，无需编译/联网，拷目录即用）。
-  - py2.7 → pymysql **0.10.x**（最后支持 Python 2 的版本线）。
-  - py3.9+ → pymysql **1.x**。
-  - 放到脚本旁的 `vendor/` 目录（`config.json` 的 `vendor_path`），`import pymysql` 自动从这里加载。
+- **Python**：**2.7** 或 **3.9+**（同一份脚本双兼容）；依赖仅标准库 + **vendored pymysql**（纯 Python，拷目录即用，版本对应见部署第 1 步）。
 - **平台**：仅 **Linux/Unix**——用了 `fcntl` 文件锁与 `os.setsid`，Windows 不可运行。
-- **数据库**：MySQL（开发实测于 5.0；脚本对 MySQL 5.0 的两个特性有依赖，见[坑点 ⑧](#-charac_no-自增污染--零桩根治)与[性能](#补货性能auction_main-只有主键)）。
-- **形态**：编排脚本常驻在能连库的环境内执行；`frida.js` 注入游戏服进程实际投递邮件。
+- **数据库**：MySQL（开发实测于 5.0）。
 
 ---
 
-## 架构与组成
+## 部署（照着手册做，每步都有验证）
 
-| 件                        | 角色                                                                                                      |
-| ------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `market_agent.py`         | 编排脚本。按 `config.json` 对每个市场跑「停 → 回收 → 补货 → 启」；把邮件**入队**到 `frida.pending_mail`。 |
-| `frida.js`                | 注入游戏服进程的脚本。**消费 `pending_mail` 队列发邮件**（在线即时发 / 离线落库），含多频道防双发。       |
-| `config.json`             | 库连接 + 两市场（停启命令 / 补货 / 回收规则）+ `system_owner.special` 零桩特殊补货块。                    |
-| `restock_list`（表）      | 拍卖行补货清单（材料 / 稀有 / 神器 / 消耗品 / 称号 / 宠物 / 装备 / 装扮）。                               |
-| `item_catalog`（表）      | 物品静态属性目录（回收判型/判稀有度、补货判 kind/token 依赖）。                                           |
-| `cera_consign_list`（表） | 金币寄售的补货 + 回收配置（12 种金币包）。                                                                |
-| `pending_mail`（表）      | 邮件队列。`market` 列区分市场，`item_id=0` 金币 / 非 0 物品；幂等键 `(market, auction_id, occ_time)`。    |
+> 前提：服务器是 Linux，MySQL 已装好，游戏服务端（含拍卖行 / 金币寄售两个服务）已能正常运行。
+> 以下以部署目录 `/data/auction` 为例，所有 `<...>` 按你的实际环境替换。
 
-发信链路：`market_agent` **先入队后删单**（幂等：`INSERT IGNORE` + 崩在任意一步都不重复打款也不吞单）→ `frida.js` 轮询队列、调游戏原生发信函数投递。
+### 第 0 步：动手前先确认 3 件事
 
----
+| 确认项 | 怎么确认 |
+| --- | --- |
+| Python 版本 | `python --version`（2.7 或 3.9+ 都可以） |
+| 两个服务怎么停 / 启 | 手动停启一次拍卖行服务，记下命令，第 3 步填进 config |
+| MySQL 连接方式 | 本机连库用 socket 还是 host/port；知道各库名（frida、拍卖行、charac） |
 
-## 核心机制与经济口径
-
-### 系统 / 玩家的区分
-
-玩家手动上架与系统补货**两者 `owner_type` 同为 1**，无法靠它区分。改用 **`owner_id` 边界**：
-
-- `owner_id < id_base`（默认 `90000001`）= 玩家挂单（`owner_id` 即其 `charac_no`），是回收对象；
-- `owner_id >= id_base` = 系统挂单，用于补货计数/续期，**绝不会被自己回收**。
-
-**唯一约束**：`system_owner.id_base` 必须大于你服任何真实玩家的 `charac_no`。判据另以 **`m_id` 兜底**（`_sys_owner_where` / `_player_owner_where`：系统 = `owner≥id_base` 且 `charac_info` 无该号真玩家 `m_id<>0` 行），覆盖 reset/回收/续期/库存/沉金邮件清理，防历史高位污染号被误判（见[坑点 ⑧](#-charac_no-自增污染--零桩根治)）。
-
-### 经济口径（实测）
-
-- 成交价 = **单价 × 数量**（`auction_main` 装备 `add_info`=品级、材料 `add_info`=堆叠数）。
-- 押金固定 **10000 必退**（玩家上架时已被游戏扣，直接删挂单不触发自动退款，须如数退还 → 一进一出不产生套利）。
-- 手续费：拍卖行 **5%**、金币寄售 **2%**。回收价 = 成交价 − 手续费 + 退押金。
-- 金币寄售货币 = **代币券**；玩家寄售标价 ≤ `recycle_price` 即回收，到手 = 标价 × (1 − 2%)，无押金。
-
-### 无活跳过 / 在线回收 / 并发锁
-
-- **无活跳过**：非 reset 轮先只读探测 `_has_recycle_work` / `_has_restock_work`：无待回收且无补货缺口就**不停启服务**（每小时大多没活，空跑停服会让玩家卡几秒）。
-- **在线回收（不停服）**：仅有待回收、无补货缺口时，若 `markets.<名>.recycle.online=true` 则直接在线 DELETE 回收（发信经 frida 队列），**不停服**——只有真有补货缺口才停服。前提是游戏服能容忍在线 DELETE（玩家端刷新列表即消失、点购买无异常），上线前先按下方冒烟测试实测；出现幽灵单/购买异常就把该市场 `recycle.online` 设 `false` 回退为停服窗口内回收。
-- **并发单例锁**：`once`/`reset`/常驻循环启动即抢 `flock`，拿不到就退出，防上一轮卡死时下一轮叠加成双实例互相踩踏。
-
-### 补货性能（auction_main 只有主键）
-
-`auction_main` 是游戏建的表，实测**只有 `auction_id` 主键、无其它索引**，按 `item_id`/`owner_id` 过滤都是全表扫。**不要给这张游戏热表加索引**（容器重启/游戏更新会重置表结构，且拖慢游戏自身高频写入）。补货侧靠三项优化把每轮对该表的查询压成**常数次**：一次 `GROUP BY owner_id,item_id` 取全量库存分布、批量多值 `INSERT`（每 500 行一条）、owner 装箱游标化。停机窗口与补货列表规模基本解耦（亚秒级；首次冷启动灌几万行也是个位数秒）。
-
----
-
-## 关键实测定论 / 坑点
-
-> 每条都是踩过坑、用数据库实证的结论，改回收逻辑/发信函数/特殊补货前务必先看。
-
-### ① 装备的 `add_info` 是品级，不是数量
-
-装备的 `auction_main.add_info` 存的是**品级**（实测可达 999999998），不是堆叠数；只有 `kind=stackable`（材料）的 `add_info` 才是真实堆叠数。
-
-- **回收侧**：装备 `count` 必须强制 = 1，否则 `单价 × add_info` 溢出 INT（截成 21.47 亿天价金币）。代码已对装备置 1，并加 20 亿单笔硬上限兜底（超限跳过 + 告警）。
-- **补货侧**：系统补货上架普通装备（有耐久的武器/防具等）时 `add_info` 填 **999999998**（最上级品级）。**不要填 0**——白板 0 能正常加载、正常购买，但玩家买到手后一经维修装备即消失（实测）；填非法品级 → 拍卖行启动加载该挂单时 `RegistItem() 失败 → 服务进程退出 → 整服起不来`（与挂单数量/内存无关，是程序主动退出）。称号/装扮/红蓝绿装备/宠物不用此值（无耐久不涉维修，且特殊补货对 `add_info` 另有唯一性要求，见坑点 ⑦）。
-
-### ② `letter_id` 必须用 AUTO_INCREMENT，禁止手动 MAX+1
-
-`letter.letter_id` 是自增主键（`postal` 主键是 `postal_id`，`letter_id` 只是外键列）。手动 `MAX+1` 会与游戏原生发信、以及"邮件被领取/删除后 MySQL 5.0 重启把自增重算成 `MAX+1`"撞车 → 同一 `letter_id` 出现两行 `postal` 被游戏**合并成一封信**（代币券邮件混入天价金币）。正解：`INSERT letter` 不指定 `letter_id`，紧接 `LAST_INSERT_ID()` 回写 `postal.letter_id`。
-
-### ③ `postal.gold` 列语义随物品类型变
-
-- 金币邮件：`gold` = 金币、`item_id = 0`。
-- 代币券（货币物品，`unlimit_flag=1`）：`gold` = **数量**、`add_info = 0`，靠 `item_id` 区分。在线发代币券走 `ReqDBSendNewSystemMail` 时数量传**第 3 参（gold 位）**，`inven` 只装道具标记 `item_id`、不写 count（曾用 `inven.count` 承载，在线收到数量为 0）。
-
-### ④ 邮件硬约束：正文 ≤ 156 字节，UTF-8，MailDate 0 非无限
-
-- 自定义邮件正文有约 **156 字节**上限，超过则正文整段空白（发件人正常）。脚本文案已压在上限内、超长自动回退单行。
-- 中文必须 **UTF-8**：文本编码成 UTF-8 原始字节、经 `UNHEX` 写入 VARBINARY 列，不被连接字符集二次编码。
-- `ReqDBSendNewSystemMail` 第 7 参（保留天数）传 0 **并非无限制**（实测），沿用 30 天。
-
-### ⑤ 中文乱码与连接字符集
-
-本服客户端按 **UTF-8** 字节渲染中文，MySQL 默认连接字符集会在读写 `letter`/`postal` 时二次转码、破坏原始字节。要让游戏拿到原始 UTF-8 字节，连接必须**字节透明**：在 MySQL 配置（`my.cnf`）的 `[client]` 段加 `default-character-set=latin1`（单字节透明，所有客户端读写不再二次转码）。**不要**在 `[mysqld]` 下加，MySQL 5.x 启动会报错。脚本侧已把文本以 UTF-8 字节 `UNHEX` 写入 VARBINARY 列、离线发信用 `CONVERT(... USING latin1)` 复刻游戏原生形态，无需改。
-
-> 验证：`SELECT HEX(text) FROM frida.pending_mail ORDER BY id DESC LIMIT 1;` 中文"您"开头应为 `E682A8`（UTF-8）；`C4FA` = GBK（乱码）。
-
-### ⑥ "可交易" ≠ "能上架"：iteminfo 白名单
-
-拍卖行启动时从 `iteminfo.dat` 加载物品定义，**只有 iteminfo 收录的物品才能上架**。补货池只要混进一款不在 iteminfo 的，拍卖行加载其挂单时 `RegistItem` 失败、整服退出（同坑点 ①）。换游戏版本后重新挑补货物品时，记得对照 iteminfo 白名单过滤 `restock_list`。
-
-### ⑦ 特殊补货 = 零桩（称号 / 装扮 / 红蓝绿装备 / 宠物）
-
-这些 `type_token`（`title name` / `creature` / `artifact red|blue|green`）曾被误判"必须建 `charac_info` 桩角色"，实测**全部攻克为零桩**——和普通装备一样挂系统 **90M 假 owner**（`≥id_base`、不在 `charac_info`），**不再建任何桩角色**。加载的真实约束只有两条：
-
-- **add_info**：非宠物（称号/装扮/装备）的 `add_info` 必须**全局唯一**（填 0 重复会崩 `RegistItem`）→ 从高位段 `addinfo_base`（默认 2.1 亿，> 玩家观测上限）`MAX+1` 唯一递增；宠物的 `add_info` = `creature_items.ui_id`（天然唯一）。
-- **宠物建实例 + owner 匹配**：宠物须在 `creature_items` 建行（`it_id`=蛋 item_id、`stomach=100`），且挂单 `owner_id` 必须 == 该实例的 `charac_no`（两者同设那个 90M 假号）。`ui_id` 是 AUTO_INCREMENT，**绝不手填**（游戏服在线并发孵宠会撞主键，同 `letter_id` 教训）→ 插入不带 `ui_id`、用 `LAST_INSERT_ID` 当 `add_info`。
-
-owner 密度与普通系统同源，按 `rotate_every`（默认 10）/owner 轮换（每 owner 过密会崩 `RegistItem`，上限类型相关且偏低，10 远低于上限）。回收照常含这几类（`count` 恒 1）。由 `market_agent.restock_special`（`system_owner.special` 块）实现。
-
-### ⑧ charac_no 自增污染 → 零桩根治
-
-（历史经验，零桩已从源头消除此问题，全新部署不涉及。）`charac_info.charac_no` 是 AUTO_INCREMENT，且 **MySQL 5.0 的 InnoDB 不持久化自增计数器、每次 mysqld 重启用 `MAX(charac_no)+1` 重算**。早期建桩方案显式插入高位桩号（如 9900xxxx）把自增顶到高位后，之后新建的真玩家也落高位、与桩交错；只要高位桩行存在，`ALTER AUTO_INCREMENT` 压低也会被下次重启的 `MAX+1` 弹回——`owner_id≥id_base=系统` 阈值会把这些高位真玩家误判成系统。**零桩根治**：不建任何桩 → `MAX(charac_no)` 永远是真玩家 → 自增稳定在玩家低位段；系统全用 90M 假号（不在 `charac_info`）。
-
-> ⚠️ **避坑提示**：若你确实需要直改 `charac_info.charac_no`（如把已污染服的真玩家回迁低位），**必须同步修复 `charac_view.info`**——它是登录大厅"角色选择列表"的缓存，`info` 列是 **zlib 压缩**（MySQL `COMPRESS` 格式）的 blob，内部以 **4 字节小端**存着每个角色的 `charac_no`。直改 `charac_info` 不更新它 → 登录拿到旧号 → `DB_LoadInventory fetch ERROR charac_no=旧号` 无法登录。因为是压缩的，明文/HEX 全库扫描**扫不到**（极隐蔽）。修法：`UPDATE charac_view SET info=COMPRESS(REPLACE(UNCOMPRESS(info), UNHEX(旧号小端hex), UNHEX(新号小端hex))) WHERE m_id=受影响账号;`（读库即生效，无需重启）。零桩新部署不迁号，不会踩此坑。
-
-### ⑨ 多频道：在线投递 + 防双发
-
-多频道时（每个游戏服进程 = 一个频道）**各频道都注入一份 frida、同抢一个 `pending_mail` 队列**，而"在线判断/在线发信/通知"只能作用于**本频道**玩家 → 在线投递天然绑定玩家所在频道。解法 = **两阶段 + 原子认领**：
-
-- 阶段 1（各频道）：只处理"本频道在线"的玩家 → 原子认领后在线发信 + 通知。
-- 阶段 2（离线兜底）：`status=0` 且 `created_at` 超过宽限期（须 > 轮询间隔，确保各频道都轮询过、在线频道先认领）= 真离线 → 任一频道认领后离线落库。
-- 原子认领：`UPDATE status=1,claimed_by=频道 WHERE id AND status=0`（InnoDB 行锁串行）+ 回读确认 → 杜绝双发；发信失败退回 `status=0` 重试不吞单。`enqueue_mail` 须填 `created_at=NOW()`。
-
-### ⑩ 系统卖家沉金邮件清理
-
-玩家买走系统物品时，游戏服把成交金币**发邮件给系统卖家**（`owner_id≥id_base`），这些卖家永不读取 → `letter`/`postal` 随成交量只增不减膨胀。`_purge_system_seller_mail` 在有实际成交/补货的轮顺手清（纯沉金、删之无经济影响、绝不碰真玩家 `<id_base`；空轮不做以免无谓全表扫）。可用 `system_owner.purge_seller_mail=false` 关闭。
-
----
-
-## 部署
-
-> 以下为通用流程，不绑定具体容器/调度器/路径。把 `<服务端环境>`、`<部署目录>`、`<frida.js 加载路径>`、库名/服务进程名按你的服务端替换。
-
-### 1. 放置脚本 + vendor pymysql
-
-把 `market_agent.py`、`config.json` 放到部署目录（脚本与 `vendor/` 建议放在重启不丢失的持久化目录）。下载对应 Python 版本的 pymysql 源码，取出纯 Python 包目录放进 `vendor/`：
+### 第 1 步：放脚本 + vendor pymysql
 
 ```bash
-# py2.7 → PyMySQL 0.10.x；py3.9+ → PyMySQL 1.x。解压后只需要包目录:
-cp -r PyMySQL-x.y.z/pymysql  <部署目录>/vendor/pymysql
-python -c "import sys; sys.path.insert(0,'<部署目录>/vendor'); import pymysql; print(pymysql.__version__)"
+mkdir -p /data/auction/vendor
+cp market_agent.py config.json /data/auction/
+# 下载对应 Python 版本的 PyMySQL 源码（py2.7→0.10.x，py3.9+→1.x），解压后只拷包目录:
+cp -r /path/to/PyMySQL-x.y.z/pymysql  /data/auction/vendor/pymysql
 ```
 
-### 2. 配置 `config.json`
-
-填库连接（`mysql`：`unix_socket` 或 `host/port`、最小权限账号 `user/password`、`charset`）、两个市场的停启命令/补货/回收规则、`system_owner`（`id_base`、`special` 零桩块）。建议建一个最小权限库账号而非用 root。
-
-### 3. 初始化表
+**验证**：
 
 ```bash
+cd /data/auction
+python -c "import sys; sys.path.insert(0,'vendor'); import pymysql; print(pymysql.__version__)"
+```
+
+能打印版本号 = OK；报 `ModuleNotFoundError` = vendor 路径不对，检查 `vendor/pymysql/__init__.py` 是否存在。
+
+### 第 2 步：建最小权限 MySQL 账号（推荐，别用 root）
+
+```sql
+CREATE USER 'auction_bot'@'localhost' IDENTIFIED BY '换成你的密码';
+GRANT SELECT,INSERT,UPDATE,DELETE,CREATE ON frida.* TO 'auction_bot'@'localhost';                          -- 脚本自己的库: 建表/读写
+GRANT SELECT ON taiwan_cain.*            TO 'auction_bot'@'localhost';                                     -- charac 库: 只读, 判系统/玩家
+GRANT SELECT,DELETE ON taiwan_cain_2nd.* TO 'auction_bot'@'localhost';                                    -- game 库: 宠物回收要删 creature_items
+GRANT SELECT,INSERT,UPDATE,DELETE ON taiwan_cain_auction_gold.* TO 'auction_bot'@'localhost';              -- 拍卖行挂单库
+GRANT SELECT,INSERT,UPDATE,DELETE ON taiwan_cain_auction_cera.* TO 'auction_bot'@'localhost';              -- 金币寄售挂单库
+FLUSH PRIVILEGES;
+```
+
+> 库名按你服的实际情况替换。game 库只读会报权限，但宠物删除有 try/except 兜底（只告警不阻断），仍建议给 DELETE。
+
+### 第 3 步：改 config.json（必改 4 处）
+
+打开 `config.json`，只改这 4 处，其余保持默认：
+
+| 位置 | 改成什么 |
+| --- | --- |
+| `mysql.user` / `mysql.password` | 第 2 步建的账号 |
+| `mysql.unix_socket` 或 `mysql.host/port` | 本机实际连接方式（unix_socket 优先，另一组可留作注释） |
+| `vendor_path` / `log_path` | `/data/auction/vendor` / `/data/auction/market_agent.log` |
+| `markets.auction.stop_cmd` / `start_cmd`、`markets.cera.stop_cmd` / `start_cmd` | 第 0 步记下的真实停启命令 |
+
+> 回收价/补货价不是部署项（那是上线后调优）；`system_owner.id_base=90000001` 一般不动（仅当你服有玩家 charac_no 大于它时才改大）。
+
+**验证**（config 是合法 JSON）：
+
+```bash
+python -c "import json; json.load(open('config.json')); print('config ok')"
+```
+
+### 第 4 步：初始化表
+
+```bash
+cd /data/auction
 python market_agent.py init
 ```
 
-建好 `pending_mail` / `restock_list` / `cera_consign_list`（并播种 12 种金币包默认值）。
-
-### 4. 导入物品目录（回收依赖，必做一次）
-
-`item_catalog` 是物品静态属性（类型/稀有度/等级）在库里的只读镜像，回收逻辑靠它判定归类：
+**验证**：
 
 ```bash
-mysql --default-character-set=utf8 -u<user> -p <frida库> < item_catalog.sql
+mysql -uauction_bot -p frida -e "SHOW TABLES;"
 ```
 
-可重复导入（先清后灌）。只有游戏数据变更才需重新生成，**调回收价不需碰它**。
+应看到 `pending_mail` / `restock_list` / `cera_consign_list` 三张表。
+卡住：报权限错误 → 回第 2 步补 GRANT；报连接失败 → 回第 3 步检查连接配置。
 
-### 5. 配置补货列表
+### 第 5 步：导入物品目录 + 参考价表（必做）
 
-往 `restock_list` 填要常备补货的物品（字段含义、材料/装备两类换算见 `restock_list_example.sql`），或直接导入现成的全量列表 `restock_list_generated.sql`（开头 `DELETE` + 重灌，可覆盖）。挑编号可参考 `item_tradable_catalog.js`。
+三个文件连导（都自带建表/清空，可重复执行）：
 
-### 6. 合并 frida 消费者 + 冒烟测试
+```bash
+mysql --default-character-set=utf8 -uauction_bot -p frida < item_catalog.sql           # 物品属性目录(回收判型/稀有度)
+mysql --default-character-set=utf8 -uauction_bot -p frida < item_ref_price.sql          # 参考价表(回收概率判价数据源)
+mysql --default-character-set=utf8 -uauction_bot -p frida < restock_price_from_ref.sql  # 补货价批量替换为参考价(未命中保持原价)
+```
 
-项目根的 `frida.js` 已把消费者模块合并好（追加模块 + 在 `init_db()` 末尾加一行 `auction_module_init();`）。放到游戏服实际加载的 frida.js 路径，让游戏重新加载。冒烟测试：
+> `item_ref_price.sql` / `restock_price_from_ref.sql` 由 `gen_ref_prices.py` 从分享工程价格表（items.csv）生成；换价格表后重跑生成再导。
+
+**验证**：
+
+```bash
+mysql -uauction_bot -p frida -e "SELECT COUNT(*) FROM item_catalog; SELECT COUNT(*) FROM item_ref_price;"
+```
+
+应返回 `26543`（目录条数）和 `5097`（参考价条数，随价格表版本变）。
+
+### 第 6 步：配置补货列表
+
+两个选择：
+
+- **直接导入现成全量列表**（省事；物品按清风 1031 版本整理，换版本务必自己重挑）：
+
+  ```bash
+  mysql -uauction_bot -p frida < restock_list_generated.sql
+  mysql -uauction_bot -p frida -e "SELECT COUNT(*) FROM restock_list;"   # 应返回 6521
+  ```
+
+- **自己按版本挑**：参考 `restock_list_example.sql`（字段含义）和 `item_tradable_catalog.js`（按分类折叠的可交易清单），逐条 INSERT。
+
+### 第 7 步：合并 frida 消费者 + 冒烟测试
+
+本仓库根的 `frida.js` 已合并好消费者模块（在 `init_db()` 末尾加了 `auction_module_init();`），直接覆盖到游戏服实际加载的 frida.js 路径，让游戏重新加载。
+
+**冒烟测试**（验证发信链路通）：
 
 ```sql
 INSERT INTO frida.pending_mail (auction_id,charac_no,title,text,gold,status,created_at)
 VALUES (NULL, <你的角色charac_no>, '拍卖行', '测试金币邮件', 12345, 0, NOW());
 ```
 
-一个轮询周期内该行 `status` 应变 1，角色收到 12345 金币（在线弹窗 / 离线上线可见）。
+等一个轮询周期（默认几秒），然后：
 
-### 7. 先手动跑一轮，再上定时器
+```sql
+SELECT id, status, claimed_by FROM frida.pending_mail ORDER BY id DESC LIMIT 3;
+```
+
+你的角色应收到 12345 金币（在线弹窗 / 离线上线可见），该行 `status` 应变 `1`。
+卡住：status 一直是 0 → frida.js 没被加载或 `auction_module_init()` 没执行；邮件乱码 → （my.cnf `[client]` 加 `default-character-set=latin1`）。
+
+### 第 8 步：试跑一轮 → 上定时器
 
 ```bash
-python market_agent.py once     # 跑一轮即退出，观察日志四步正常、服务进程结束后确实重启
+cd /data/auction
+python market_agent.py once
+sleep 5 && tail -30 market_agent.log
 ```
 
-确认无误后，用**外部定时器**（cron 或任意调度器，独立于游戏进程生命周期、最抗重启）每整点跑一次 `once`：
+首轮预期日志：每个市场 `[1/4] 关闭 → [2/4] 回收 → [3/4] 补货 → [4/4] 开启`，服务进程结束并确实重启。之后轮次大多显示 `无待回收/补货, 跳过(不停启服务)` 或 `[在线] 回收(不停服...)`。
+
+确认无误后挂 cron（每整点跑一次）：
 
 ```cron
-0 * * * *  cd <部署目录> && python market_agent.py once >> market_agent.log 2>&1
+0 * * * *  cd /data/auction && python market_agent.py once >> market_agent.log 2>&1
 ```
 
-> `frida.js` 会在每个整点前一分钟广播"即将重启"，与整点 cron 对齐。**别用无参模式**（那是常驻循环 daemon，会持锁挡住 cron）。
+> `frida.js` 会在整点前一分钟广播“即将重启”，与整点 cron 对齐。**别用无参模式**（常驻 daemon，会持锁挡住 cron）。
 
 ### 命令一览
 
@@ -219,42 +207,68 @@ python market_agent.py once     # 跑一轮即退出，观察日志四步正常�
 
 ---
 
+### 排错速查
+
+| 现象（日志关键字） | 原因 | 处理 |
+| --- | --- | --- |
+| `回收探测异常` / `补货探测异常` + `1146` | 表没建 / 没导入 | 回第 4 / 5 步 |
+| `1142` 或 `permission denied` | 账号权限不足 | 回第 2 步补 GRANT |
+| `命令失败`（停/启） | stop/start 命令写错 | 回第 3 步，先手动验证命令本身能停能启 |
+| 邮件乱码 | 连接字符集二次转码 | my.cnf `[client]` 加 `default-character-set=latin1`（别放 `[mysqld]`） |
+| 每轮都停启（无探测异常） | 回收限价太宽，总有玩家单命中 | 调 `recycle` 限价，或先 `recycle.online=false` 观察 |
+| 补货后拍卖行崩 / 起不来 | 补货池混进不在 iteminfo 的物品 / add_info 非法 | 对照 iteminfo 白名单，删非法条目后 `reset` |
+| 玩家买系统物品后维修即消失 | 普通装备 add_info 填了 0 | 应填 999999998 |
+
+---
+
 ## config.json 速览
 
 | 块                         | 说明                                                                                                                                                                          |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mysql`                    | 库连接：`unix_socket` 或 `host/port`、`user/password`、`charset`、`frida_db`。                                                                                                |
 | `interval`                 | 常驻循环的轮间隔秒（cron 模式不用）。                                                                                                                                         |
-| `mail_encoding`            | 邮件文本编码，固定 `utf-8`（配合 `my.cnf [client]=latin1`，见坑点 ⑤；**切勿改 gbk**）。                                                                                       |
-| `markets.<名>`             | 每个市场：`enabled`、`label`、`db`、`stop_cmd`/`start_cmd`、`restock`（mode/list/定价）、`recycle`（mode/规则/费率/押金）。                                                   |
+| `mail_encoding`            | 邮件文本编码，固定 `utf-8`（配合 `my.cnf [client]=latin1`；**切勿改 gbk**）。                                                                                       |
+| `markets.<名>`             | 每个市场：`enabled`、`label`、`db`、`stop_cmd`/`start_cmd`、`restock`（mode/list/定价）、`recycle`（mode/规则/费率/押金/`pricing` 参考价公式）。                                                   |
 | `system_owner`             | `id_base`（系统/玩家边界）、`rotate_every`（每 owner 件数上限，别 ≥15）、`special`（零桩块：`addinfo_base`/`tokens`/`creature_tokens`/`drop_tokens`/`charac_db`/`game_db`）。 |
 | `vendor_path` / `log_path` | pymysql 包目录 / 日志文件路径，**按你的实际部署目录修改**（示例值为 `/data/auction/...`）；省略这两项则用默认 = 脚本同目录的 `vendor/` 与 `market_agent.log`。                |
 
-回收规则（`markets.<名>.recycle`）语义是**单价上限**：玩家挂单单价 ≤ 上限即按挂单价回收，没命中任何规则 = 不回收。优先级 `item_overrides`（按物品编号）> `special_by_kind_type` > 按稀有度（`equipment_by_rarity` / `material_by_rarity`）。
+回收规则（`markets.<名>.recycle`）是**双轨**：
+
+- **主判定（参考分享工程）**：JOIN `item_ref_price` 取 per-item 基准价算 `P_std`（材料/消耗品=基准价；白蓝装 `A(n)×基准价+B(n)`；紫粉装 `基准价+BaseCost(n)×(1+√(基准价/scale))`；`upgrade<10` 视为白板=基准价），再按 `R=玩家单价/P_std` **概率回收**：`R≤0.5` 必收、`0.5–0.9` 线性降、`0.9–1.1` 收 50%、`1.1–1.5` 再降、`>1.5` 不收——只收便宜到离谱的单，不吃满仓。
+- **回退（csv 没价的物品）**：`item_ref_price` 未导入 / 物品无参考价 → 旧规则必收上限，优先级 `item_overrides` > `special_by_kind_type` > 按稀有度（`equipment_by_rarity` / `material_by_rarity`）。
+
+系数在 `recycle.pricing`（`scale` / `white_blue_coeff` / `purple_pink_base_cost`，来自分享工程 config.yaml）。
 
 ---
 
 ## ⚠️ 移植须知（不同版本必读）
 
 - **物品列表仅供参考，禁止完全套用**：`item_catalog.sql`、`item_tradable_catalog.js`、`restock_list_generated.sql` 里的物品列表是按 **清风 1031 版本**、还原所有旧装备 / 真紫装备整理而来，**仅供参考**。不同游戏版本的物品并不一样，必须**按你自己的版本重新整理**，切勿照搬。
-  - 整理时务必保证**四处 `iteminfo.dat` 内容一致**：① 服务端 pvf 内的 `iteminfo.dat`、② 客户端 pvf 内的 `iteminfo.dat`、③ `/home/neople/auction` 内的 `iteminfo.dat`、④ `/home/neople/point` 内的 `iteminfo.dat`。四者不一致会导致上架/加载异常（参见上文坑点 ⑥ iteminfo 白名单）。
+  - 整理时务必保证**四处 `iteminfo.dat` 内容一致**：① 服务端 pvf 内的 `iteminfo.dat`、② 客户端 pvf 内的 `iteminfo.dat`、③ `/home/neople/auction` 内的 `iteminfo.dat`、④ `/home/neople/point` 内的 `iteminfo.dat`。四者不一致会导致上架/加载异常。
 - **`frida.js` 因版本而异**：不同版本游戏服的 `frida.js` 并不一致，本仓库这份是在特定版本上合并的。其中做市消费者模块的**关键逻辑位于第 2414–2688 行**——移植到你的版本时只参考这一段、对照你自己的 `frida.js` 自行修改接入，**不要整文件覆盖**。
 
 ---
 
 ## 文件清单
 
-| 文件                         | 说明                                                                                               |
-| ---------------------------- | -------------------------------------------------------------------------------------------------- |
-| `market_agent.py`            | 多市场编排脚本（py2.7 / py3.9+ 双兼容，pymysql；拍卖行 + 金币寄售；特殊补货零桩）。                |
-| `config.json`                | 配置（库连接 / `markets` 多市场 / `system_owner.special` 零桩块）。仓库内密码用 `CHANGE_ME` 占位。 |
-| `frida.js`                   | 已合并消费者模块的 frida 脚本（金币邮件 + 代币券物品邮件 + 多频道防双发），部署这份。              |
-| `restock_list_example.sql`   | 拍卖行补货列表字段说明 + 材料/装备填写实例。                                                       |
-| `restock_list_generated.sql` | 全量补货列表（`DELETE` 全表 + 重灌，可覆盖）。                                                     |
-| `item_catalog.sql`           | 物品静态属性目录（回收判型/判稀有度依赖，可重复导入）。                                            |
-| `item_tradable_catalog.js`   | 按分类折叠的可交易物品清单（挑补货白名单用）。                                                     |
-| `vendor/pymysql`             | 纯 Python 驱动（py2.7→0.10.x / py3.9+→1.x）。                                                      |
-| `LICENSE`                    | GNU General Public License v3.0 全文。                                                             |
+| 件                         | 说明                                                                                               |
+| -------------------------- | -------------------------------------------------------------------------------------------------- |
+| `market_agent.py`          | 多市场编排脚本（py2.7 / py3.9+ 双兼容，pymysql；拍卖行 + 金币寄售；特殊补货零桩）。                |
+| `config.json`              | 配置（库连接 / `markets` 多市场 / `system_owner.special` 零桩块）。仓库内密码用 `CHANGE_ME` 占位。 |
+| `frida.js`                 | 已合并消费者模块的 frida 脚本（金币邮件 + 代币券物品邮件 + 多频道防双发），部署这份。              |
+| `restock_list_example.sql` | 拍卖行补货列表字段说明 + 材料/装备填写实例。                                                       |
+| `restock_list_generated.sql` | 全量补货列表（`DELETE` 全表 + 重灌，可覆盖）。                                                   |
+| `item_catalog.sql`         | 物品静态属性目录（回收判型/判稀有度依赖，可重复导入）。                                            |
+| `item_ref_price.sql`       | 参考价表（5097 条，回收概率判价数据源；由 `gen_ref_prices.py` 生成）。                              |
+| `restock_price_from_ref.sql` | 补货价批量替换为参考价（命中才改，未命中保持原价；由 `gen_ref_prices.py` 生成）。                |
+| `gen_ref_prices.py`        | 从分享工程价格表（items.csv）生成上面两个 SQL。                                                     |
+| `item_tradable_catalog.js` | 按分类折叠的可交易物品清单（挑补货白名单用）。                                                     |
+| `vendor/pymysql`           | 纯 Python 驱动（py2.7→0.10.x / py3.9+→1.x）。                                                      |
+| `LICENSE`                  | GNU General Public License v3.0 全文。                                                             |
+
+**库表**（都在 frida 库）：`restock_list` 补货清单（材料/稀有/神器/消耗品/称号/宠物/装备/装扮）、`item_catalog` 物品属性目录（回收判型/稀有度）、`item_ref_price` 参考价表（回收 P_std 基准）、`cera_consign_list` 金币寄售补货+回收配置、`pending_mail` 邮件队列（幂等键 `(market, auction_id, occ_time)`）。
+
+**发信链路**：`market_agent` **先入队后删单**（幂等：崩在任意一步都不重复打款也不吞单）→ `frida.js` 轮询 `pending_mail`、调游戏原生发信函数投递。
 
 ---
 

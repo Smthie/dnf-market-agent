@@ -192,7 +192,7 @@ def enqueue_mail(cur_f, conn_frida, market, auction_id, occ_time, charac_no, tit
 
 # ---- 6. 回收: 拍卖行(catalog_rules, 发金币邮件) ----
 def _recycle_price_limit(rc, item_id, kind, token, rarity):
-    """物品回收单价上限; None=不回收. 优先级: 单品覆盖 > kind:token 特例 > 装备/材料按稀有度."""
+    """(fallback) 物品回收单价上限; None=不回收. 优先级: 单品覆盖 > kind:token 特例 > 装备/材料按稀有度."""
     ov = rc.get("item_overrides") or {}
     if str(item_id) in ov:
         return int(ov[str(item_id)])
@@ -211,19 +211,68 @@ def _recycle_price_limit(rc, item_id, kind, token, rarity):
     return None
 
 
+def _pstd_price(pc, kind, rarity, ref_price, upgrade):
+    """分享工程 P_std 标准价(参考): 材料/消耗品=价格表单价; 白蓝装=A(n)*shop+B(n); 紫粉装=P_base+BaseCost(n)*(1+sqrt(P_base/scale)).
+    ref_price 充当 shop_price / P_base. upgrade<10 视为白板(直接用 ref_price); n>18 取 18 档. 返回 None = 不走公式(史诗/无系数)."""
+    if ref_price is None:
+        return None
+    if kind != "equipment":
+        return int(ref_price)                     # 材料/消耗品: 不参与强化
+    n = min(int(upgrade or 0), 18)
+    if n < 10:
+        return int(ref_price)                     # 白板/低强化: 基础价
+    if rarity in (0, 1):                          # 白/蓝装
+        coeff = (pc.get("white_blue_coeff") or {}).get(str(n))
+        if not coeff:
+            return None
+        return int(coeff["A"] * ref_price + coeff["B"])
+    if rarity in (2, 3):                          # 紫/粉装
+        cost = (pc.get("purple_pink_base_cost") or {}).get(str(n))
+        if cost is None:
+            return None
+        scale = float(pc.get("scale", 150000))
+        return int(ref_price + cost * (1.0 + (ref_price / scale) ** 0.5))
+    return None                                  # 史诗等: 不走公式, 走 fallback
+
+
+def _recycle_prob(r):
+    """分享工程回收概率: R=玩家单价/P_std. <=0.5 必收; 0.5-0.9 线性降; 0.9-1.1 50%; 1.1-1.5 再降; >1.5 不收."""
+    if r <= 0.5:
+        return 1.0
+    if r < 0.9:
+        return 1.0 - 0.7 * (r - 0.5) / 0.4
+    if r <= 1.1:
+        return 0.5
+    if r <= 1.5:
+        return 0.5 * (1.0 - (r - 1.1) / 0.4)
+    return 0.0
+
+
 def recycle_catalog_rules(m, conn_mk, conn_frida):
     rc = m["recycle"]
+    pc = rc.get("pricing") or {}
     fee_rate = float(rc.get("fee_rate", 0.05))
     deposit = int(rc.get("deposit", 10000))
     cur_a = conn_mk.cursor()
     cur_f = conn_frida.cursor()
-    # 玩家挂单 JOIN item_catalog 取类型/稀有度; unit_price=0 为纯竞拍单不收; catalog 为主键点查.
+    # 玩家挂单 JOIN item_catalog 取类型/稀有度 + item_ref_price 取参考价(P_std 基准); unit_price=0 为纯竞拍单不收.
+    # item_ref_price 不存在/为空(未导入 csv 参考价) -> 降级为无参考价版本, 全部走旧规则(fallback), 回收不中断.
+    has_ref = True
+    try:
+        cur_a.execute("SELECT COUNT(*) FROM " + FRIDA_DB + ".item_ref_price")
+        if cur_a.fetchone()[0] == 0:
+            has_ref = False
+    except Exception:
+        has_ref = False
+    join_ref = " LEFT JOIN " + FRIDA_DB + ".item_ref_price rp ON a.item_id = rp.item_id " if has_ref else ""
+    sel = ("a.auction_id, a.owner_id, a.occ_time, a.add_info, "
+           "a.unit_price, a.item_id, a.upgrade, c.cname, c.kind, c.type_token, c.rarity"
+           + (", rp.price" if has_ref else ""))
     try:
         cur_a.execute(
-            "SELECT a.auction_id, a.owner_id, a.occ_time, a.add_info, "
-            "a.unit_price, a.item_id, c.cname, c.kind, c.type_token, c.rarity "
-            "FROM auction_main a "
+            "SELECT " + sel + " FROM auction_main a "
             "INNER JOIN " + FRIDA_DB + ".item_catalog c ON a.item_id = c.item_id "
+            + join_ref +
             "WHERE " + _player_owner_where("a.owner_id") + " AND a.unit_price > 0"
         )
     except Exception as e:
@@ -236,9 +285,24 @@ def recycle_catalog_rules(m, conn_mk, conn_frida):
     processed = 0
     cre_del = []            # 被回收的宠物 ui_id(=add_info); 末尾批量销毁 creature_items 实例
     SANE_MAX = 2000000000   # 单笔回收金额硬上限(20亿, 低于 INT 列上限); 任何口径错误致天价 -> 跳过不发
-    for auction_id, owner_id, occ_time, add_info, unit_price, item_id, cname, kind, token, rarity in rows:
-        limit = _recycle_price_limit(rc, item_id, kind, token, rarity)
-        if limit is None or int(unit_price) > limit:
+    for row in rows:
+        auction_id, owner_id, occ_time, add_info, unit_price, item_id, upgrade = row[:7]
+        cname, kind, token, rarity = row[7:11]
+        ref_price = row[11] if has_ref else None
+        # 参考价存在且公式适用 -> 分享工程概率回收; 否则 fallback 旧规则(稀有度上限必收)
+        limit = None
+        if has_ref and ref_price is not None:
+            pstd = _pstd_price(pc, kind, rarity, ref_price, upgrade)
+            if pstd is not None:
+                rr = int(unit_price) / float(pstd)
+                prob = _recycle_prob(rr)
+                if random.random() >= prob:
+                    continue                    # 概率没中: 不回收(模拟玩家行为, 不吃满仓)
+            else:
+                limit = _recycle_price_limit(rc, item_id, kind, token, rarity)
+        else:
+            limit = _recycle_price_limit(rc, item_id, kind, token, rarity)
+        if limit is not None and int(unit_price) > limit:
             continue
         # 数量: 仅可堆叠物品(材料)的 add_info 才是堆叠数; 装备的 add_info 是内部值(实测 23207/4006/十亿级),
         # 绝不可当数量, 否则 sell_price 溢出天价. 装备不可堆叠 -> count 恒为 1.
@@ -895,6 +959,23 @@ def init_tables():
             log.warning(u"  item_catalog 为空 —— 拍卖行回收不会命中, 请导入 item_catalog.sql")
     except Exception:
         log.warning(u"  item_catalog 不存在 —— 拍卖行回收将被跳过, 请导入 item_catalog.sql(见 README)")
+
+    # item_ref_price 参考价表(由 gen_ref_prices.py 生成的 item_ref_price.sql 导入, 含数据): 回收概率判价数据源
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS item_ref_price ("
+        " item_id INT UNSIGNED NOT NULL PRIMARY KEY,"
+        " price INT NOT NULL"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8"
+    )
+    try:
+        c.execute("SELECT COUNT(*) FROM item_ref_price")
+        n = c.fetchone()[0]
+        if n:
+            log.info(u"  item_ref_price 就绪(%d 行)", n)
+        else:
+            log.warning(u"  item_ref_price 为空 —— 回收概率判价将回退为本工程稀有度上限规则, 请导入 item_ref_price.sql")
+    except Exception:
+        log.warning(u"  item_ref_price 不存在 —— 回收概率判价将回退为本工程稀有度上限规则, 请导入 item_ref_price.sql")
     conn.commit()
     conn.close()
     log.info(u"frida 表已就绪(pending_mail / restock_list / cera_consign_list)")
