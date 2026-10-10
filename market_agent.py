@@ -615,7 +615,7 @@ def _pick_enhance(bands):
     return 0
 
 
-# ---- 7a. 补货: 拍卖行(catalog_list, 装备件数区间目标 + 消耗品价值目标, 参考工程驱动) ----
+# ---- 7a. 补货: 拍卖行(catalog_list, 按 quantity 数量驱动(每种补足目标件数) + 强化/品级/心态增强) ----
 def restock_catalog_list(m, conn_mk, conn_frida):
     rs = m["restock"]
     # 参考工程: 卖家心态 4 档概率浮动 + 市场饱和度降价 + 上架价硬下限
@@ -625,8 +625,6 @@ def restock_catalog_list(m, conn_mk, conn_frida):
     sat_th = int(sat.get("saturated_threshold", 20))
     sat_shift = float(sat.get("saturated_shift", 0))
     min_ratio = float(rs.get("min_price_ratio", 0.10))
-    etc = rs.get("equip_target_count") or {}          # 装备每物品目标件数区间(参考工程)
-    consume_target = int(rs.get("consume_target_value", 100000000))  # 消耗品市场目标总价值
     max_stack = int(rs.get("consume_max_stack", 1000))               # 消耗品单次上架堆叠上限
     max_unit_price = int(rs.get("max_unit_price", 0))                # 单价上限(0=不限制)
     edist = rs.get("enhance_dist") or {}
@@ -668,16 +666,6 @@ def restock_catalog_list(m, conn_mk, conn_frida):
     NO_ENDUR = ("creature", "artifact red", "artifact blue", "artifact green", "title name")  # 称号/宠物/红蓝绿装备无耐久
     EQUIP_GRADE = eq_grade if eq_grade else 999999998       # 装备品级 add_info(可配置, 默认最上级实测合法值)
     RARITY_ENH = {0: "white", 1: "blue", 2: "purple", 3: "pink"}  # rarity 数字 -> 强化分布键; 史诗(4+)无档 -> 白板
-    # 消耗品价值驱动(参考工程): 市场消耗品总价值(系统+玩家挂单, 排除特殊品) < consume_target_value 才补, 补到达标为止
-    sp_tokens = tuple(sorted(SP_TOKENS))
-    excl_sql = (" AND c.type_token NOT IN (%s)" % ",".join(["%s"] * len(sp_tokens))) if sp_tokens else ""
-    cur_a.execute(
-        "SELECT COALESCE(SUM(a.unit_price * a.add_info), 0) FROM auction_main a "
-        "INNER JOIN " + FRIDA_DB + ".item_catalog c ON a.item_id = c.item_id "
-        "WHERE a.unit_price > 0 AND a.add_info > 0 AND c.kind != 'equipment'" + excl_sql,
-        sp_tokens,
-    )
-    need_value = max(0, consume_target - int(cur_a.fetchone()[0]))
     rows, total = [], 0
     for item_id, system_price, quantity, stack_size, upgrade, endurance, seal_flag, kind, type_token, rarity in items:
         if (SP_ENABLED and type_token in SP_TOKENS) or type_token in SP_DROP_TOKENS:
@@ -686,17 +674,8 @@ def restock_catalog_list(m, conn_mk, conn_frida):
         eff_stack = 1 if is_equip else (stack_size or 1)
         current = have.get(int(item_id), 0)
         rk = RARITY_ENH.get(int(rarity)) if rarity is not None else None
-        if is_equip:
-            # 装备: 目标件数按稀有度区间随机(参考工程 equip_target_count, 每 item 维度), 缺则补足
-            tc = etc.get(rk) or {}
-            target = random.randint(int(tc.get("min", 1)), int(tc.get("max", 5)))
-            need = max(0, target - current)
-        else:
-            # 消耗品: 价值驱动(参考工程) —— 市场总价值缺口内补 1 单, 达标后不再补
-            if need_value <= 0:
-                continue
-            need = 1
         target_records = (quantity + eff_stack - 1) // eff_stack
+        need = max(0, target_records - current)          # quantity 数量驱动: 每种补足目标件数
         if is_equip:
             tok = type_token or ""
             eq_endur = 0 if tok in NO_ENDUR else 35
@@ -744,7 +723,6 @@ def restock_catalog_list(m, conn_mk, conn_frida):
                     next_id, expire_time, owner_id, owner_name[:20], SYS_OWNER_TYPE, str(nexon)[:25],
                     instant_price, 0, item_id, add_info, 0, 0, unit_price,
                 ))
-                need_value -= unit_price * add_info        # 消耗品: 补单价值从缺口扣除(价值驱动)
             occ[owner_id] = occ.get(owner_id, 0) + 1
             next_id += 1
             total += 1

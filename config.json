@@ -223,25 +223,6 @@
         },
         "equip_grade": 999999998,
         "_note": "上架价: 装备=强化公式 P_std(n)×心态倍率(n=按稀有度抽档, 白板n=0用基准价), 材料/消耗品=基准价×心态倍率. 心态 4 档概率浮动; 同物品已挂<5件稀缺提价10% / >=20件饱和降价10%; 硬下限=基准价×0.10. 驱动方式(参考工程): 装备=equip_target_count[稀有度]区间随机件数目标(缺补足), 消耗品=市场总价值<consume_target_value才补(补到达标). max_unit_price=单价上限(超限放弃该单), consume_max_stack=消耗品单次堆叠上限(防 add_info 溢出). equip_grade=装备品级add_info(参考工程源码未见, 默认最上级实测合法值999999998; 强化信息由 upgrade 表达物品等级). rand_low/rand_high 保留兼容; 想波动关 seller_mind 全部 prob=0; 想白板关 enhance_dist",
-        "equip_target_count": {
-          "white": {
-            "min": 1,
-            "max": 5
-          },
-          "blue": {
-            "min": 1,
-            "max": 5
-          },
-          "purple": {
-            "min": 1,
-            "max": 3
-          },
-          "pink": {
-            "min": 1,
-            "max": 2
-          }
-        },
-        "consume_target_value": 100000000,
         "consume_max_stack": 1000,
         "max_unit_price": 2999999999
       },
