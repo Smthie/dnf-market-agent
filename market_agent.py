@@ -790,6 +790,28 @@ def do_restock(m, conn_mk, conn_frida):
         restock_fixed_list(m, conn_mk, conn_frida)
     else:
         log.warning(u"  未知补货 mode=%s, 跳过", mode)
+    _backfill_average_price(conn_mk)   # 补货轮末: 整段 AVG 回灌均价表(客户端上架查均价用)
+
+
+def _backfill_average_price(conn_mk):
+    """补货轮末把当前在架挂单按(item,upgrade)整段 AVG 回灌均价表 auction_average_price.
+    原因: agent 直写 auction_main 绕过服务端, 而均价表本由服务端在真实成交时维护 -> 这里自动镜像
+    在架行情, 使客户端上架能给魔法装备等任何在架组合给出平均价. UPSERT 幂等; 失败不阻断补货.
+    注: 主键仅 (item_id,upgrade), 故按此分组, seperate_upgrade 取 MIN."""
+    try:
+        cur = conn_mk.cursor()
+        cur.execute(
+            "INSERT INTO auction_average_price (item_id, upgrade, average_price, seperate_upgrade) "
+            "SELECT item_id, upgrade, CAST(AVG(unit_price) AS UNSIGNED), MIN(COALESCE(seperate_upgrade,0)) "
+            "FROM auction_main WHERE unit_price > 0 "
+            "GROUP BY item_id, upgrade "
+            "ON DUPLICATE KEY UPDATE average_price = VALUES(average_price), "
+            "    seperate_upgrade = VALUES(seperate_upgrade)")
+        conn_mk.commit()
+        if cur.rowcount:
+            log.info(u"  均价表回灌 %d 组(item+强化档)", cur.rowcount)
+    except Exception as e:
+        log.warning(u"  均价表回灌失败(不阻断补货): %s", e)
 
 
 # ---- 8. 单市场单轮 / 全市场单轮 ----
